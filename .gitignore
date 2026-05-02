@@ -1,11 +1,13 @@
 # weights and biases
-.wandb/ 
+.wandb/
 wandb_api_key.txt
 
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyo
+*.pyd
 *.DS_Store
 *.vscode
 
@@ -19,14 +21,31 @@ __pycache__/
 # vim temp files
 *.swp
 
+# uv and virtual environments
+.venv/
+venv/
+env/
+__pypackages__/
+
+# Tool caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.cache
+.hypothesis/
+
 # Sphinx doc
 doc/_build/
 doc/source/auto_examples/
 doc/source/modules/generated/
+docs/_build/
 
-# Distribution / packaging
+# Build artifacts
 .Python
-env/
 build/
 develop-eggs/
 dist/
@@ -41,11 +60,17 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
-.pytest_cache/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Notebooks
+.ipynb_checkpoints/
+.ipynb_checkpoints
 
 # PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
 
@@ -53,16 +78,10 @@ var/
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.coverage
-.coverage.*
-.cache
+# Test coverage
 nosetests.xml
 coverage.xml
 *,cover
-.hypothesis/
 
 # Translations
 *.mo
@@ -71,11 +90,5 @@ coverage.xml
 # Django stuff:
 *.log
 
-# Sphinx documentation
-docs/_build/
-
 # PyBuilder
 target/
-
-#Ipython Notebook
-.ipynb_checkpoints
