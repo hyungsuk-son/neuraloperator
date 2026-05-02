@@ -16,6 +16,8 @@ dependencies = [
     "opt-einsum",
     "h5py",
     "zencfg>=0.3.0",
+    "torch>=2.8.0",
+    "plotly>=6.7.0",
 ]
 requires-python = ">=3.9"
 readme = "README.rst"
@@ -76,6 +78,8 @@ all = [
 
 [dependency-groups]
 dev = [
+    "ipykernel>=6.31.0",
+    "jupyter>=1.1.1",
     "ruff",
 ]
 

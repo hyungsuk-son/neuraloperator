@@ -32,6 +32,23 @@ dependency management, and formatting commands.
 - `config/` — YAML configuration files for experiments
 - `examples/` — Jupyter notebook tutorials
 
+## Git Remotes
+
+이 프로젝트는 두 개의 리모트에 동시에 푸시하도록 설정되어 있습니다.
+
+- `myfork` — `git@github.com:hyungsuk-son/neuraloperator.git` (개인 포크)
+- `uraniborg` — `git@github.com:uraniborg-ai/neuraloperator.git` (팀 리파지토리)
+
+`myfork`에 두 URL이 모두 push URL로 등록되어 있으므로, `git push`만 실행하면
+두 리파지토리에 동시에 반영됩니다.
+
+새 머신에서 이 설정을 복원하려면 아래 명령을 실행하세요.
+
+```sh
+git remote set-url --add --push myfork git@github.com:hyungsuk-son/neuraloperator.git
+git remote set-url --add --push myfork git@github.com:uraniborg-ai/neuraloperator.git
+```
+
 ## Standard Commands
 
 ```sh
