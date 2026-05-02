@@ -31,6 +31,11 @@ dependency management, and formatting commands.
 - `scripts/` — Training entry points per benchmark problem
 - `config/` — YAML configuration files for experiments
 - `examples/` — Jupyter notebook tutorials
+- `context/` — Research papers and personal notes for context
+  - `context/papers/` — Paper PDFs or summary markdown files
+  - `context/notes/` — Personal analysis notes and memos
+- `presentations/` — Quarto-based HTML slide presentations
+  - Render with: `uv run quarto render presentations/<file>.qmd`
 
 ## Git Remotes
 

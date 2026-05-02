@@ -73,6 +73,11 @@ var/
 .ipynb_checkpoints/
 .ipynb_checkpoints
 
+# Quarto render outputs (keep .qmd source, ignore generated HTML/files)
+presentations/*.html
+presentations/*_files/
+presentations/.quarto/
+
 # PyInstaller
 *.manifest
 *.spec

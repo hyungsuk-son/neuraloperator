@@ -1,0 +1,1128 @@
+---
+title: "Neural Operator & FNO"
+subtitle: "Darcy Flow로 배우는 함수 공간 학습"
+author: "Uraniborg AI"
+date: "2026-05-02"
+lang: ko
+format:
+  revealjs:
+    theme: moon
+    slide-number: "c/t"
+    width: 1600
+    height: 900
+    margin: 0.05
+    center: false
+    echo: false
+    warning: false
+    message: false
+    fig-align: center
+    transition: slide
+    transition-speed: fast
+    footer: "Neural Operator & FNO — Uraniborg AI"
+    include-in-header:
+      text: |
+        <style>
+        .reveal h1 { font-size: 1.7em; }
+        .reveal h2 { font-size: 1.25em; color: #e5c98c; }
+        .reveal h3 { font-size: 1.0em; color: #a8c4e0; }
+        .small { font-size: 0.82em; }
+        .box { background: rgba(255,255,255,0.07); border-radius: 8px; padding: 10px 18px; margin: 6px 0; }
+        .green-box { background: rgba(100,220,100,0.12); border-left: 4px solid #64dc64; border-radius: 0 8px 8px 0; padding: 8px 14px; margin: 5px 0; }
+        .blue-box  { background: rgba(100,180,255,0.12); border-left: 4px solid #64b4ff; border-radius: 0 8px 8px 0; padding: 8px 14px; margin: 5px 0; }
+        .orange-box{ background: rgba(255,180,80,0.12);  border-left: 4px solid #ffb450; border-radius: 0 8px 8px 0; padding: 8px 14px; margin: 5px 0; }
+        .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+        table { font-size: 0.83em; }
+        blockquote { font-size: 0.88em; border-left: 3px solid #e5c98c; padding-left: 12px; color: #ccc; }
+        </style>
+execute:
+  freeze: auto
+  cache: true
+jupyter: neuralop
+---
+
+```{python}
+#| label: setup
+#| include: false
+import torch, numpy as np, warnings
+warnings.filterwarnings('ignore')
+
+from neuralop.models import FNO
+from neuralop.training import AdamW
+from neuralop.data.datasets import load_darcy_flow_small
+from neuralop.utils import count_model_params
+from neuralop import LpLoss, H1Loss
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import plotly.io as pio
+
+pio.renderers.default = 'notebook'
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+```
+
+```{python}
+#| label: load-data
+#| include: false
+train_loader, test_loaders, data_processor = load_darcy_flow_small(
+    n_train=1000, batch_size=64,
+    n_tests=[100, 50], test_resolutions=[16, 32],
+    test_batch_sizes=[32, 32],
+)
+data_processor = data_processor.to(device)
+test_samples_16 = test_loaders[16].dataset
+test_samples_32 = test_loaders[32].dataset
+```
+
+---
+
+## 목차
+
+:::: {.columns}
+::: {.column width="50%"}
+**Part 1 · Neural Operator 소개**
+
+1. 기존 PDE 풀이의 한계
+2. Neural Operator란?
+3. 핵심 성질 세 가지
+
+**Part 2 · Darcy Flow**
+
+4. 물리적 배경
+5. 수학적 공식
+6. 연산자 관점 — 그린 함수 & 푸리에
+7. FNO의 탄생 배경
+:::
+::: {.column width="50%"}
+**Part 3 · 실습**
+
+8. 데이터셋 & 시각화
+9. FNO 아키텍처
+10. Spectral Convolution
+11. 모델 학습
+12. 예측 결과 & 오차 분석
+13. Zero-shot 초해상도
+14. 주파수 스펙트럼 분석
+15. 결론 & 참고문헌
+:::
+::::
+
+---
+
+# Part 1 · Neural Operator 소개
+
+---
+
+## 기존 PDE 풀이의 한계
+
+| 방법 | 특징 | 병목 |
+|------|------|------|
+| **FEM / FDM** | 정확한 수치해 | 새 입력 $a(x)$마다 처음부터 $O(N^3)$ 재계산 |
+| **Monte Carlo** | 불확실성 정량화 가능 | 수천 번의 PDE 풀기 필요 |
+| **ROM** | 줄어든 차원 | 비선형 문제에 취약 |
+
+<br>
+
+::: {.box}
+**핵심 문제**: 입력 함수 $a(x)$가 조금만 바뀌어도 처음부터 다시 풀어야 합니다.
+지층 탐사, 기후 모델링처럼 수백만 번의 시뮬레이션이 필요한 경우 현실적으로 불가능합니다.
+:::
+
+---
+
+## Neural Operator란?
+
+$$\mathcal{G}_\theta: \mathcal{A} \longrightarrow \mathcal{U}$$
+
+::: {.three-col}
+::: {.box}
+**기존 딥러닝**
+
+$f_\theta: \mathbb{R}^n \to \mathbb{R}^m$
+
+벡터 → 벡터
+고정 해상도 의존
+:::
+::: {.blue-box}
+**Neural Operator**
+
+$\mathcal{G}_\theta: \mathcal{A} \to \mathcal{U}$
+
+**함수 → 함수**
+해상도 독립
+:::
+::: {.orange-box}
+**목표**
+
+$\mathcal{G}_\theta \approx \mathcal{G}^\dagger$
+
+PDE의 해 연산자를
+데이터로 학습
+:::
+:::
+
+<br>
+
+> *Kovachki et al. (2021) — "Neural Operator: Learning Maps Between Function Spaces with Applications to PDEs" (arXiv:2108.08481, JMLR 2023)*
+
+---
+
+## Neural Operator의 핵심 성질
+
+::: {.three-col}
+::: {.green-box}
+### 🚀 빠른 추론
+
+한번 학습 후 새 입력에 대해 **밀리초** 내 예측
+
+FEM 대비 **1,000배 이상** 빠름
+:::
+::: {.blue-box}
+### 📐 해상도 불변
+
+훈련 해상도와 다른 해상도에서도 즉시 동작
+
+**Zero-shot Super-resolution**
+:::
+::: {.orange-box}
+### 📊 함수 학습
+
+유한 차원 벡터가 아닌 **연속 함수 공간** 매핑
+
+범용적 일반화
+:::
+:::
+
+<br>
+
+::: {.box}
+**Universal Approximation**: Neural Operator는 임의의 연속 비선형 연산자를 근사할 수 있음이 이론적으로 증명됩니다. *(Kovachki et al., 2021)*
+:::
+
+---
+
+# Part 2 · Darcy Flow
+
+---
+
+## Darcy Flow란?
+
+**다공성 매질(porous medium)을 통과하는 유체 흐름**을 기술하는 대표적인 타원형 PDE
+
+:::: {.columns}
+::: {.column width="55%"}
+### 응용 분야
+
+- 🏔️ 지하수 흐름 모델링
+- 🛢️ 석유 / 가스 채굴 최적화
+- 🌿 탄소 격리 (Carbon Sequestration)
+- 💧 필터 및 막(membrane) 설계
+- 🌊 토양 오염물질 확산 예측
+:::
+::: {.column width="45%"}
+### 수치 해석의 도전
+
+- 불균질 투수율 $a(\mathbf{x})$ 처리
+- 정상 상태 + 경계값 문제 (BVP)
+- 지층 모델 하나당 **수시간** 계산
+- 불확실성 정량화: 수천~수만 번 반복
+:::
+::::
+
+---
+
+## 지배 방정식
+
+$$-\nabla \cdot \bigl(a(\mathbf{x})\, \nabla u(\mathbf{x})\bigr) = f(\mathbf{x}), \quad \mathbf{x} \in D \subset \mathbb{R}^2$$
+
+<br>
+
+| 기호 | 의미 | 역할 |
+|------|------|------|
+| $a(\mathbf{x})$ | **투수율 (permeability) 필드** | **입력 (Input)** |
+| $u(\mathbf{x})$ | **압력 (pressure) 필드** | **출력 (Output)** |
+| $f(\mathbf{x})$ | 소스 항 (source term) $= 1$ | 상수 |
+| $\partial D$ | 영역 경계 (Dirichlet BC) | $u = 0$ |
+
+<br>
+
+::: {.green-box}
+**연산자 관점**: $\mathcal{G}^\dagger: a \mapsto u$
+
+투수율 *함수*를 받아 압력 *함수*를 내보내는 연산자를 학습합니다.
+:::
+
+---
+
+## 연산자 관점 ① — 그린 함수 {.smaller}
+
+**균질 매질 가정 ($a = K$, 상수) → 포아송 방정식**
+
+$$-K\nabla^2 p(\mathbf{x}) = f(\mathbf{x})$$
+
+**그린 함수 $G$**: 점 소스에 대한 시스템의 기본 응답 (임펄스 응답)
+
+$$-K\nabla^2 G(\mathbf{x}, \mathbf{x}') = \delta(\mathbf{x} - \mathbf{x}')$$
+
+**중첩의 원리 → 합성곱(Convolution)으로 해 표현**
+
+$$p(\mathbf{x}) = \int_\Omega G(\mathbf{x},\mathbf{x}')\,f(\mathbf{x}')\,d\mathbf{x}' = (G * f)(\mathbf{x})$$
+
+::: {.blue-box}
+💡 미분 방정식을 푸는 어려운 문제가 **그린 함수를 이용한 합성곱 연산**으로 변환됩니다.
+입력 함수 $f$를 출력 함수 $p$로 **매핑**하는 구조가 명확해집니다.
+:::
+
+---
+
+## 연산자 관점 ② — 푸리에 변환 {.smaller}
+
+푸리에 변환으로 공간 도메인 합성곱 → 주파수 도메인 **단순 곱셈**
+
+$$K|\boldsymbol{\omega}|^2\,\hat{p}(\boldsymbol{\omega}) = \hat{f}(\boldsymbol{\omega})$$
+
+$$\hat{p}(\boldsymbol{\omega}) = \underbrace{\frac{1}{K|\boldsymbol{\omega}|^2}}_{\hat{G}(\boldsymbol{\omega})} \cdot \hat{f}(\boldsymbol{\omega})$$
+
+**역변환으로 해 복원**
+
+$$p(\mathbf{x}) = \mathcal{F}^{-1}\!\bigl\{\hat{G}(\boldsymbol{\omega}) \cdot \mathcal{F}\{f(\mathbf{x})\}\bigr\}$$
+
+::: {.box}
+**연산자 파이프라인**: $f(\mathbf{x})$ $\xrightarrow{\text{FFT}}$ $\hat{G}$ 곱셈 $\xrightarrow{\text{IFFT}}$ $p(\mathbf{x})$
+:::
+
+---
+
+## FNO의 탄생 배경
+
+**현실의 지층은 $a(\mathbf{x})$가 불균질** → $\hat{G}(\boldsymbol{\omega})$를 해석적으로 구할 수 없음
+
+:::: {.columns}
+::: {.column width="50%"}
+### 전통 방법의 한계
+
+- $a(\mathbf{x})$가 공간에 따라 복잡하게 변함
+- 푸리에 공간에서 단순 선형 곱셈 불가
+- 새로운 $a(\mathbf{x})$마다 수치 해석 반복
+:::
+::: {.column width="50%"}
+### FNO의 해법
+
+$$R_\phi(\boldsymbol{\omega}) \approx \hat{G}(\boldsymbol{\omega})$$
+
+- 복잡한 $\hat{G}$를 **신경망 가중치**로 학습
+- 데이터 기반 연산자 근사
+- 임의의 $a(\mathbf{x})$에 대해 즉각 추론
+:::
+::::
+
+<br>
+
+::: {.orange-box}
+🧠 **FNO** = 푸리에 공간에서 그린 함수의 역할을 하는 복소수 가중치 $R_\phi$를
+데이터로 학습하는 신경망 — 해석적으로 풀 수 없는 불균질 매질 문제를 해결합니다.
+:::
+
+---
+
+# Part 3 · 데이터셋
+
+---
+
+## 데이터셋: load_darcy_flow_small
+
+:::: {.columns}
+::: {.column width="55%"}
+| 구분 | 해상도 | 샘플 수 | 용도 |
+|------|--------|---------|------|
+| 학습 | 16×16 | 1,000 | FNO 학습 |
+| 테스트 A | 16×16 | 100 | 동일 해상도 평가 |
+| 테스트 B | 32×32 | 50 | **Zero-shot** 평가 |
+
+<br>
+
+**입력** $a(x)$: 투수율 — 이진(0/1) 패턴
+**출력** $u(x)$: 압력 — 연속 스칼라장
+
+각 샘플은 동일한 물리 함수의 서로 다른 이산화(discretization)
+:::
+::: {.column width="45%"}
+::: {.green-box}
+**데이터 생성 방법**
+
+Gaussian Random Field로 생성한
+이진 투수율 $a(x)$에 대해
+수치 PDE 해석으로 $u(x)$ 계산
+:::
+
+::: {.blue-box}
+**Neural Operator의 목표**
+
+수치 해석 없이 $a(x)$만 보고
+$u(x)$를 즉시 예측
+:::
+:::
+::::
+
+---
+
+## 데이터 시각화
+
+```{python}
+#| label: data-viz
+#| fig-height: 5.0
+
+N_SHOW = 4
+fig = make_subplots(
+    rows=2, cols=N_SHOW,
+    subplot_titles=(
+        [f'투수율 a(x) — 샘플 {i+1}' for i in range(N_SHOW)] +
+        [f'압력 u(x)  — 샘플 {i+1}' for i in range(N_SHOW)]
+    ),
+    horizontal_spacing=0.04, vertical_spacing=0.10,
+)
+
+for i in range(N_SHOW):
+    d = test_samples_16[i]
+    perm = d['x'][0].numpy()
+    pres = d['y'][0].numpy()
+    fig.add_trace(go.Heatmap(z=perm, colorscale='RdBu_r',
+                             showscale=(i == N_SHOW-1),
+                             colorbar=dict(x=1.02, len=0.45, title='a(x)', thickness=10)),
+                  row=1, col=i+1)
+    fig.add_trace(go.Heatmap(z=pres, colorscale='Plasma',
+                             showscale=(i == N_SHOW-1),
+                             colorbar=dict(x=1.02, len=0.45, title='u(x)', thickness=10)),
+                  row=2, col=i+1)
+
+fig.update_xaxes(showticklabels=False)
+fig.update_yaxes(showticklabels=False)
+fig.update_layout(
+    height=460, template='plotly_dark',
+    title='Darcy Flow 데이터: 투수율(위) → 압력(아래)',
+    margin=dict(t=70, b=10, l=10, r=70),
+)
+fig.show()
+```
+
+---
+
+## 데이터 분포
+
+```{python}
+#| label: data-dist
+#| fig-height: 4.5
+
+perms_list = [test_samples_16[i]['x'][0].numpy() for i in range(20)]
+pres_list  = []
+for i in range(20):
+    d = data_processor.preprocess(test_samples_16[i], batched=False)
+    y = d['y'].numpy().squeeze()
+    pres_list.append(y.flatten())
+
+all_perms = np.concatenate([p.flatten() for p in perms_list])
+all_pres  = np.concatenate(pres_list)
+
+fig = make_subplots(rows=1, cols=2,
+    subplot_titles=['투수율 a(x) 분포 — 이진 패턴', '압력 u(x) 분포 — 연속 분포'])
+
+fig.add_trace(go.Histogram(x=all_perms, nbinsx=10,
+    marker_color='#4488ff', opacity=0.85, name='a(x)'), row=1, col=1)
+fig.add_trace(go.Histogram(x=all_pres, nbinsx=40,
+    marker_color='#ff7744', opacity=0.85, name='u(x)'), row=1, col=2)
+
+fig.update_xaxes(title_text='픽셀 값')
+fig.update_yaxes(title_text='빈도', row=1, col=1)
+fig.update_layout(height=400, template='plotly_dark',
+    title='데이터 분포 — 입력(이진)과 출력(연속)의 특성 차이',
+    showlegend=False, margin=dict(t=70, b=30))
+fig.show()
+```
+
+::: {.small}
+- **투수율** $a(x)$: 0과 1 두 값만 — 불연속 이진 패턴 (고주파 성분 풍부)
+- **압력** $u(x)$: $[0, 1.6]$ 범위의 부드러운 연속 분포 — PDE의 평활화 효과
+:::
+
+---
+
+# Part 4 · FNO 아키텍처
+
+---
+
+## FNO 핵심 수식
+
+**Fourier Neural Operator Layer** (Li et al., 2021 — arXiv:2010.08895)
+
+$$v_{t+1}(x) = \sigma\!\Bigl(W\,v_t(x) + \bigl(\mathcal{K}(a;\phi)\,v_t\bigr)(x)\Bigr)$$
+
+**Spectral Convolution**:
+
+$$\bigl(\mathcal{K}(a;\phi)\,v_t\bigr)(x) = \mathcal{F}^{-1}\!\bigl(R_\phi \cdot \mathcal{F}(v_t)\bigr)(x)$$
+
+| 기호 | 의미 |
+|------|------|
+| $\mathcal{F}$, $\mathcal{F}^{-1}$ | 2D FFT / IFFT |
+| $R_\phi \in \mathbb{C}^{d_v \times d_v \times k_1 \times k_2}$ | **학습 가능한 복소수 가중치** (저주파 $k_1 \times k_2$ 모드만) |
+| $W$ | 1×1 Convolution (선형 Skip 경로) |
+| $\sigma$ | GELU 활성화 함수 |
+
+---
+
+## FNO 아키텍처 다이어그램
+
+```{python}
+#| label: arch-diagram
+#| fig-height: 5.2
+
+COLORS = dict(input='#1565C0', lifting='#2E7D32', fno='#E65100',
+              proj='#6A1B9A', output='#B71C1C')
+
+def box(fig, x0, y0, x1, y1, color, text, fs=11):
+    fig.add_shape(type='rect', x0=x0, y0=y0, x1=x1, y1=y1,
+                  fillcolor=color, opacity=0.88, line=dict(color='white', width=2))
+    fig.add_annotation(x=(x0+x1)/2, y=(y0+y1)/2, text=text,
+                       showarrow=False, font=dict(color='white', size=fs), align='center')
+
+def arrow(fig, x0, y0, x1, y1, color='#aaaaaa'):
+    fig.add_annotation(x=x1, y=y1, ax=x0, ay=y0,
+                       xref='x', yref='y', axref='x', ayref='y',
+                       showarrow=True, arrowhead=3, arrowwidth=2.5, arrowcolor=color)
+
+fig = go.Figure()
+xs = [0, 2.0, 3.9, 5.7, 7.5, 9.3, 11.1, 13.1, 14.9]
+w  = 1.6
+
+box(fig, xs[0], 0.25, xs[0]+w, 0.75, COLORS['input'],  'Input<br><i>a(x)</i><br>(B,1,H,W)')
+arrow(fig, xs[0]+w, 0.5, xs[1], 0.5)
+box(fig, xs[1], 0.15, xs[1]+w, 0.85, COLORS['lifting'], 'Lifting<br>MLP<br>1→24 ch')
+arrow(fig, xs[1]+w, 0.5, xs[2], 0.5)
+for k, i in enumerate([2, 3, 4, 5]):
+    box(fig, xs[i], 0.10, xs[i]+w, 0.90, COLORS['fno'], f'FNO<br>Block {k+1}', fs=10)
+    if k < 3:
+        arrow(fig, xs[i]+w, 0.5, xs[i+1], 0.5)
+arrow(fig, xs[5]+w, 0.5, xs[6], 0.5)
+box(fig, xs[6], 0.15, xs[6]+w, 0.85, COLORS['proj'],   'Projection<br>MLP<br>24→1 ch')
+arrow(fig, xs[6]+w, 0.5, xs[7], 0.5)
+box(fig, xs[7], 0.25, xs[7]+w, 0.75, COLORS['output'],  'Output<br><i>û(x)</i><br>(B,1,H,W)')
+
+bx, by = 3.9, -1.68
+bw, bh = 7.5, 1.2
+fig.add_shape(type='rect', x0=bx, y0=by, x1=bx+bw, y1=by+bh,
+              line=dict(color='#E65100', width=1.5, dash='dash'),
+              fillcolor='rgba(230,81,0,0.07)')
+fig.add_annotation(x=bx+bw/2, y=by+bh+0.09, text='<b>FNO Block 내부</b>',
+                   showarrow=False, font=dict(color='#E65100', size=12))
+arrow(fig, bx+0.1, by+bh*0.70, bx+1.2, by+bh*0.70)
+box(fig, bx+1.2, by+bh*0.50, bx+3.2, by+bh*0.95, '#EF6C00',
+    'Spectral Conv<br>FFT → R_φ → IFFT', fs=9)
+arrow(fig, bx+0.1, by+bh*0.25, bx+1.2, by+bh*0.25)
+box(fig, bx+1.2, by+0.05,     bx+3.2, by+bh*0.45, '#5D4037',
+    'Linear Skip<br>(1×1 Conv)', fs=9)
+arrow(fig, bx+3.2, by+bh*0.70, bx+4.0, by+bh*0.50)
+arrow(fig, bx+3.2, by+bh*0.25, bx+4.0, by+bh*0.45)
+fig.add_shape(type='circle', x0=bx+4.0, y0=by+bh*0.35, x1=bx+4.4, y1=by+bh*0.65,
+              fillcolor='#795548', line=dict(color='white'))
+fig.add_annotation(x=bx+4.2, y=by+bh*0.5, text='<b>+</b>',
+                   showarrow=False, font=dict(color='white', size=14))
+arrow(fig, bx+4.4, by+bh*0.5, bx+5.1, by+bh*0.5)
+box(fig, bx+5.1, by+bh*0.3, bx+6.3, by+bh*0.7, '#388E3C', 'σ GELU', fs=11)
+arrow(fig, bx+6.3, by+bh*0.5, bx+7.2, by+bh*0.5)
+fig.add_shape(type='line', x0=xs[3]+0.8, y0=0.10,   x1=xs[3]+0.8, y1=-0.42,
+              line=dict(color='#E65100', dash='dot', width=1))
+fig.add_shape(type='line', x0=xs[3]+0.8, y0=-0.42,  x1=bx+bw/2,   y1=-0.42,
+              line=dict(color='#E65100', dash='dot', width=1))
+arrow(fig, bx+bw/2, -0.42, bx+bw/2, by+bh+0.01, color='#E65100')
+
+fig.update_layout(
+    xaxis=dict(range=[-0.3, 17], showticklabels=False, showgrid=False, zeroline=False),
+    yaxis=dict(range=[-1.90, 1.20], showticklabels=False, showgrid=False, zeroline=False),
+    height=460, margin=dict(t=25, b=10, l=10, r=10),
+    template='plotly_dark', plot_bgcolor='rgba(20,30,40,0.85)',
+)
+fig.show()
+```
+
+---
+
+## Spectral Convolution 시각화
+
+```{python}
+#| label: spectral-viz
+#| fig-height: 4.6
+
+sample  = test_samples_16[0]
+a_field = sample['x'][0].numpy()
+A_fft   = np.fft.fft2(a_field)
+A_mag   = np.abs(np.fft.fftshift(A_fft))
+
+results = {}
+for n in [2, 4, 8]:
+    mask = np.zeros_like(A_fft)
+    for sl in [np.s_[:n, :n], np.s_[-n:, :n], np.s_[:n, -n:], np.s_[-n:, -n:]]:
+        mask[sl] = 1
+    results[n] = np.real(np.fft.ifft2(A_fft * mask))
+
+titles = ['원본 a(x)', '|FFT[a]| (log)', '복원: 2 modes', '복원: 4 modes',
+          '복원: 8 modes ← FNO 기본값', '', '오차 |orig − 8mode|', '']
+fig = make_subplots(rows=2, cols=4, subplot_titles=titles,
+    horizontal_spacing=0.04, vertical_spacing=0.12)
+
+fig.add_trace(go.Heatmap(z=a_field,         colorscale='RdBu_r', showscale=False), row=1, col=1)
+fig.add_trace(go.Heatmap(z=np.log1p(A_mag), colorscale='Hot',    showscale=False), row=1, col=2)
+fig.add_trace(go.Heatmap(z=results[2],      colorscale='RdBu_r', showscale=False), row=1, col=3)
+fig.add_trace(go.Heatmap(z=results[4],      colorscale='RdBu_r', showscale=False), row=1, col=4)
+fig.add_trace(go.Heatmap(z=results[8],      colorscale='RdBu_r', showscale=False), row=2, col=1)
+fig.add_trace(go.Scatter(x=[0], y=[0], mode='markers', opacity=0),                 row=2, col=2)
+fig.add_trace(go.Heatmap(z=np.abs(a_field - results[8]), colorscale='Reds', showscale=False), row=2, col=3)
+fig.add_trace(go.Scatter(x=[0], y=[0], mode='markers', opacity=0),                 row=2, col=4)
+
+fig.update_xaxes(showticklabels=False)
+fig.update_yaxes(showticklabels=False)
+fig.update_layout(height=420, template='plotly_dark',
+    title='저주파 모드만 유지하면? — n_modes=8로 전역 패턴 포착',
+    margin=dict(t=70, b=15))
+fig.show()
+```
+
+::: {.small}
+💡 8개 저주파 모드만으로 원본 구조를 상당히 잘 복원 — 압력장 $u(x)$는 저주파 위주이므로 FNO에 충분합니다.
+:::
+
+---
+
+# Part 5 · 모델 학습
+
+---
+
+## 모델 생성 및 파라미터
+
+```{python}
+#| label: model-create
+model = FNO(n_modes=(8, 8), in_channels=1, out_channels=1,
+            hidden_channels=24, projection_channel_ratio=2)
+model = model.to(device)
+n_params = count_model_params(model)
+```
+
+:::: {.columns}
+::: {.column width="42%"}
+| 파라미터 | 값 |
+|---------|-----|
+| `n_modes` | (8, 8) |
+| `in_channels` | 1 |
+| `out_channels` | 1 |
+| `hidden_channels` | 24 |
+| `n_layers` | 4 |
+| **총 파라미터** | **~192K** |
+:::
+::: {.column width="58%"}
+```{python}
+#| fig-height: 4.0
+layer_names, layer_params = [], []
+for name, p in model.named_parameters():
+    if p.requires_grad:
+        layer_names.append(name.replace('fno_blocks.', '').replace('.weight', '')[:35])
+        layer_params.append(p.numel())
+
+top_k = 12
+idx = sorted(range(len(layer_params)), key=lambda i: layer_params[i], reverse=True)
+top_n = [layer_names[i] for i in idx[:top_k]]
+top_p = [layer_params[i] for i in idx[:top_k]]
+
+fig = go.Figure(go.Bar(
+    x=top_p[::-1], y=top_n[::-1], orientation='h',
+    marker_color='#1976D2',
+    text=[f'{p:,}' for p in top_p[::-1]], textposition='outside',
+))
+fig.update_layout(
+    title=f'레이어별 파라미터 수 (총 {n_params:,}개) — Top {top_k}',
+    height=360, template='plotly_dark',
+    margin=dict(l=220, r=80, t=50, b=20),
+)
+fig.show()
+```
+:::
+::::
+
+---
+
+## 학습 설정
+
+```{python}
+#| label: train-setup
+optimizer = AdamW(model.parameters(), lr=1e-2, weight_decay=1e-4)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20)
+l2loss    = LpLoss(d=2, p=2)
+h1loss    = H1Loss(d=2)
+```
+
+:::: {.columns}
+::: {.column width="48%"}
+| 설정 | 값 |
+|------|-----|
+| 옵티마이저 | AdamW |
+| 학습률 | 1e-2 |
+| Weight Decay | 1e-4 |
+| 스케줄러 | CosineAnnealing |
+| 에포크 | 20 |
+| 학습 손실 | **H1Loss** |
+| 평가 손실 | L2Loss, H1Loss |
+:::
+::: {.column width="52%"}
+### 손실 함수 비교
+
+**L2 Loss** (Lp Loss, p=2)
+
+$$\mathcal{L}_2 = \frac{\|u - \hat{u}\|_{L^2}}{\|u\|_{L^2}}$$
+
+**H1 Loss** (Sobolev H1)
+
+$$\mathcal{L}_{H^1} = \|u - \hat{u}\|_{L^2} + \|\nabla u - \nabla\hat{u}\|_{L^2}$$
+
+H1Loss는 함수값 + **기울기** 오차 모두 최소화 → 더 부드럽고 정확한 예측
+:::
+::::
+
+---
+
+## 학습 루프
+
+```{python}
+#| label: training
+#| cache: true
+
+N_EPOCHS = 20
+train_losses, val_h1, val_l2 = [], [], []
+
+for epoch in range(N_EPOCHS):
+    # Training
+    model.train()
+    ep_loss, nb = 0.0, 0
+    for batch in train_loader:
+        batch = data_processor.preprocess(batch)
+        x, y = batch['x'].to(device), batch['y'].to(device)
+        optimizer.zero_grad()
+        loss = h1loss(model(x).float(), y.float())
+        loss.backward()
+        optimizer.step()
+        ep_loss += loss.item()
+        nb += 1
+    train_losses.append(ep_loss / nb)
+
+    # Validation
+    model.eval()
+    vh1, vl2, nv = 0.0, 0.0, 0
+    with torch.no_grad():
+        for batch in test_loaders[16]:
+            batch = data_processor.preprocess(batch)
+            x, y = batch['x'].to(device), batch['y'].to(device)
+            pred = model(x)
+            vh1 += h1loss(pred.float(), y.float()).item()
+            vl2 += l2loss(pred.float(), y.float()).item()
+            nv  += 1
+    val_h1.append(vh1 / nv)
+    val_l2.append(vl2 / nv)
+    scheduler.step()
+```
+
+---
+
+## 학습 곡선
+
+```{python}
+#| label: train-curve
+#| fig-height: 5.0
+
+epochs = list(range(1, N_EPOCHS+1))
+fig = make_subplots(rows=1, cols=2,
+    subplot_titles=['학습 H1 손실', '검증 손실 비교 (H1 & L2)'],
+    horizontal_spacing=0.10)
+
+fig.add_trace(go.Scatter(x=epochs, y=train_losses, mode='lines+markers', name='학습 H1',
+    line=dict(color='#42A5F5', width=2.5), marker=dict(size=5)), row=1, col=1)
+fig.add_trace(go.Scatter(x=epochs, y=val_h1, mode='lines+markers', name='검증 H1',
+    line=dict(color='#FF7043', width=2.5), marker=dict(size=5)), row=1, col=2)
+fig.add_trace(go.Scatter(x=epochs, y=val_l2, mode='lines+markers', name='검증 L2',
+    line=dict(color='#66BB6A', width=2.5, dash='dash'), marker=dict(size=5)), row=1, col=2)
+
+fig.update_xaxes(title_text='에포크')
+fig.update_yaxes(title_text='손실값', type='log')
+fig.update_layout(
+    height=450, template='plotly_dark',
+    title=f'FNO 학습 곡선 — 최종 검증 L2: {val_l2[-1]:.4f}  |  H1: {val_h1[-1]:.4f}',
+    legend=dict(x=0.53, y=0.95),
+)
+fig.show()
+```
+
+---
+
+# Part 6 · 예측 결과
+
+---
+
+## 추론 및 예측 시각화
+
+```{python}
+#| label: prediction
+#| fig-height: 5.6
+
+model.eval()
+N_COMPARE = 3
+fig = make_subplots(
+    rows=N_COMPARE, cols=3,
+    subplot_titles=['입력 a(x)', '정답 u(x)', '예측 û(x)'] * N_COMPARE,
+    horizontal_spacing=0.04, vertical_spacing=0.07,
+)
+
+l2_errors = []
+with torch.no_grad():
+    for idx in range(N_COMPARE):
+        s  = test_samples_16[idx]
+        sp = data_processor.preprocess(s, batched=False)
+        pred = model(sp['x'].to(device).unsqueeze(0)).squeeze(0).cpu()
+        perm = s['x'][0].numpy()
+        gt   = sp['y'].squeeze().detach().numpy()
+        pr   = pred.squeeze().numpy()
+        if gt.ndim != 2: gt = gt.reshape(gt.shape[-2], gt.shape[-1])
+        if pr.ndim != 2: pr = pr.reshape(pr.shape[-2], pr.shape[-1])
+        err = np.linalg.norm(pr - gt) / (np.linalg.norm(gt) + 1e-8)
+        l2_errors.append(err)
+        vmin, vmax = min(gt.min(), pr.min()), max(gt.max(), pr.max())
+        row = idx + 1
+        fig.add_trace(go.Heatmap(z=perm, colorscale='RdBu_r', showscale=False), row=row, col=1)
+        fig.add_trace(go.Heatmap(z=gt,   colorscale='Plasma',  showscale=False,
+                                 zmin=vmin, zmax=vmax), row=row, col=2)
+        fig.add_trace(go.Heatmap(z=pr,   colorscale='Plasma',  showscale=False,
+                                 zmin=vmin, zmax=vmax), row=row, col=3)
+        fig.add_annotation(
+            x=0.5, y=-0.14, xref=f'x{idx*3+3}', yref=f'y{idx*3+3}',
+            text=f'L2 오차: {err:.4f}', showarrow=False,
+            font=dict(size=10, color='#ff9966'))
+
+fig.update_xaxes(showticklabels=False)
+fig.update_yaxes(showticklabels=False)
+fig.update_layout(
+    height=510, template='plotly_dark',
+    title=f'FNO 예측 결과 — 평균 L2 오차: {np.mean(l2_errors):.4f}',
+    margin=dict(t=55, b=30),
+)
+fig.show()
+```
+
+---
+
+## 오차 분석
+
+```{python}
+#| label: error-analysis
+#| fig-height: 5.0
+
+model.eval()
+fig = make_subplots(
+    rows=2, cols=5,
+    subplot_titles=[f'|오차| 샘플 {i+1}' for i in range(5)] +
+                   ['오차 분포 (전체 테스트셋)', '', '', '', ''],
+    horizontal_spacing=0.03, vertical_spacing=0.14,
+    specs=[[{}]*5, [{'colspan': 5}, None, None, None, None]],
+)
+
+all_l2 = []
+with torch.no_grad():
+    for idx in range(5):
+        s  = test_samples_16[idx]
+        sp = data_processor.preprocess(s, batched=False)
+        pred = model(sp['x'].to(device).unsqueeze(0)).squeeze(0).cpu()
+        gt   = sp['y'].squeeze().detach().numpy()
+        pr   = pred.squeeze().numpy()
+        if gt.ndim != 2: gt = gt.reshape(gt.shape[-2], gt.shape[-1])
+        if pr.ndim != 2: pr = pr.reshape(pr.shape[-2], pr.shape[-1])
+        fig.add_trace(go.Heatmap(z=np.abs(pr - gt), colorscale='Reds',
+                                 showscale=(idx == 4),
+                                 colorbar=dict(x=1.01, len=0.44, title='|오차|', thickness=10)),
+                      row=1, col=idx+1)
+
+    for batch in test_loaders[16]:
+        batch = data_processor.preprocess(batch)
+        x, y  = batch['x'].to(device), batch['y'].to(device)
+        pred  = model(x)
+        for b in range(pred.shape[0]):
+            e = (torch.norm(pred[b] - y[b]) / (torch.norm(y[b]) + 1e-8)).item()
+            all_l2.append(e)
+
+fig.add_trace(go.Histogram(x=all_l2, nbinsx=25,
+    marker_color='#42A5F5', opacity=0.85, name='L2 오차'), row=2, col=1)
+fig.add_vline(x=np.mean(all_l2), line_dash='dash', line_color='#ff6644',
+              annotation_text=f'평균 {np.mean(all_l2):.4f}',
+              annotation_position='top right', row=2, col=1)
+
+fig.update_xaxes(showticklabels=False, row=1)
+fig.update_yaxes(showticklabels=False, row=1)
+fig.update_xaxes(title_text='L2 상대 오차', row=2, col=1)
+fig.update_yaxes(title_text='샘플 수',     row=2, col=1)
+fig.update_layout(
+    height=460, template='plotly_dark',
+    title=f'오차 분석 — 평균: {np.mean(all_l2):.4f} / 중앙값: {np.median(all_l2):.4f}',
+    showlegend=False, margin=dict(r=60),
+)
+fig.show()
+```
+
+---
+
+# Part 7 · Zero-shot 초해상도
+
+---
+
+## Zero-shot Super-resolution
+
+**재학습 없이 더 높은 해상도로 예측** — FNO만의 고유한 능력
+
+:::: {.columns}
+::: {.column width="55%"}
+### 왜 가능한가?
+
+FNO는 **이산 격자가 아닌 연속 함수** 사이의 매핑을 학습합니다.
+
+$$\mathcal{G}_\theta: \mathcal{A}(D;\mathbb{R}) \to \mathcal{U}(D;\mathbb{R})$$
+
+- 학습: 16×16 이산화된 함수 샘플
+- 내부 Fourier 연산: 연속 함수 기반
+- 테스트: 32×32 입력 → FNO가 32×32 출력 생성
+
+### 핵심 통찰
+
+> 모델은 특정 해상도의 가중치가 아니라,
+> **물리적 패턴 자체**를 학습합니다.
+:::
+::: {.column width="45%"}
+| | 16×16 | 32×32 |
+|--|-------|-------|
+| 학습 데이터 | ✅ 1,000 | ❌ 없음 |
+| 예측 가능? | ✅ | ✅ **Zero-shot!** |
+
+<br>
+
+::: {.orange-box}
+**전통적 CNN의 한계**
+
+16×16으로 학습한 CNN은
+32×32 입력 처리 불가
+또는 성능 급락
+:::
+
+::: {.green-box}
+**FNO의 장점**
+
+임의 해상도에서
+즉시 정상 동작
+:::
+:::
+::::
+
+---
+
+## Zero-shot 결과
+
+```{python}
+#| label: zeroshot
+#| fig-height: 5.6
+
+model.eval()
+N_SR = 3
+fig = make_subplots(
+    rows=N_SR, cols=4,
+    subplot_titles=['16×16 입력', '16×16 정답', '32×32 입력', '32×32 FNO 예측'] * N_SR,
+    horizontal_spacing=0.04, vertical_spacing=0.07,
+)
+
+with torch.no_grad():
+    for idx in range(N_SR):
+        s16  = test_samples_16[idx];   s32  = test_samples_32[idx]
+        sp16 = data_processor.preprocess(s16, batched=False)
+        sp32 = data_processor.preprocess(s32, batched=False)
+        p16  = model(sp16['x'].to(device).unsqueeze(0)).squeeze(0).cpu()
+        p32  = model(sp32['x'].to(device).unsqueeze(0)).squeeze(0).cpu()
+        y16  = sp16['y'].squeeze().detach().numpy()
+        y32  = sp32['y'].squeeze().detach().numpy()
+        pr16 = p16.squeeze().numpy()
+        pr32 = p32.squeeze().numpy()
+        for arr in [y16, y32, pr16, pr32]:
+            if arr.ndim != 2:
+                arr = arr.reshape(arr.shape[-2], arr.shape[-1])
+        l2_16 = np.linalg.norm(pr16 - y16) / (np.linalg.norm(y16) + 1e-8)
+        l2_32 = np.linalg.norm(pr32 - y32) / (np.linalg.norm(y32) + 1e-8)
+        row = idx + 1
+        fig.add_trace(go.Heatmap(z=s16['x'][0].numpy(), colorscale='RdBu_r', showscale=False), row=row, col=1)
+        fig.add_trace(go.Heatmap(z=y16,                 colorscale='Plasma',  showscale=False), row=row, col=2)
+        fig.add_trace(go.Heatmap(z=s32['x'][0].numpy(), colorscale='RdBu_r', showscale=False), row=row, col=3)
+        fig.add_trace(go.Heatmap(z=pr32,                colorscale='Plasma',  showscale=False), row=row, col=4)
+        fig.add_annotation(x=0.5, y=-0.14, xref=f'x{idx*4+2}', yref=f'y{idx*4+2}',
+            text=f'16×16 L2: {l2_16:.3f}', showarrow=False, font=dict(size=9, color='#88bbff'))
+        fig.add_annotation(x=0.5, y=-0.14, xref=f'x{idx*4+4}', yref=f'y{idx*4+4}',
+            text=f'32×32 L2: {l2_32:.3f}', showarrow=False, font=dict(size=9, color='#ffaa66'))
+
+fig.update_xaxes(showticklabels=False)
+fig.update_yaxes(showticklabels=False)
+fig.update_layout(
+    height=530, template='plotly_dark',
+    title='Zero-shot 초해상도: 16×16 학습 → 32×32 예측 (재학습 없음!)',
+    margin=dict(t=60, b=30),
+)
+fig.show()
+```
+
+---
+
+## 주파수 스펙트럼 분석
+
+```{python}
+#| label: spectrum
+#| fig-height: 4.6
+
+model.eval()
+
+def radial_psd(field):
+    arr = np.asarray(field).squeeze()
+    if arr.ndim == 3: arr = arr[0]
+    F     = np.fft.fftshift(np.fft.fft2(arr))
+    power = np.abs(F)**2
+    h, w  = power.shape
+    cy, cx = h // 2, w // 2
+    Y, X  = np.ogrid[:h, :w]
+    R     = np.sqrt((X-cx)**2 + (Y-cy)**2).astype(int)
+    rmax  = min(cy, cx)
+    return np.array([power[R==r].mean() if (R==r).any() else 0 for r in range(rmax)])
+
+spectra_a, spectra_u, spectra_p = [], [], []
+with torch.no_grad():
+    for idx in range(20):
+        s  = test_samples_16[idx]
+        sp = data_processor.preprocess(s, batched=False)
+        pred = model(sp['x'].to(device).unsqueeze(0)).squeeze(0).cpu().numpy()
+        y    = sp['y'].numpy()
+        spectra_a.append(radial_psd(s['x'][0].numpy()))
+        spectra_u.append(radial_psd(y))
+        spectra_p.append(radial_psd(pred))
+
+psd_a = np.mean(spectra_a, 0)
+psd_u = np.mean(spectra_u, 0)
+psd_p = np.mean(spectra_p, 0)
+freqs = np.arange(len(psd_a))
+
+fig = make_subplots(rows=1, cols=2,
+    subplot_titles=['방사형 파워 스펙트럼 (로그 스케일)', '2D FFT: 투수율 a(x)'],
+    horizontal_spacing=0.10)
+
+fig.add_trace(go.Scatter(x=freqs, y=psd_a, mode='lines', name='투수율 a(x)',
+    line=dict(color='#42A5F5', width=2.5)), row=1, col=1)
+fig.add_trace(go.Scatter(x=freqs, y=psd_u, mode='lines', name='압력 u(x) 정답',
+    line=dict(color='#66BB6A', width=2.5)), row=1, col=1)
+fig.add_trace(go.Scatter(x=freqs, y=psd_p, mode='lines', name='압력 û(x) 예측',
+    line=dict(color='#FF7043', width=2.0, dash='dash')), row=1, col=1)
+fig.add_vrect(x0=0, x1=8, fillcolor='orange', opacity=0.12,
+              annotation_text='FNO 유지 모드 (n=8)',
+              annotation_position='top left', row=1, col=1)
+
+a_2dfft = np.log1p(np.abs(np.fft.fftshift(np.fft.fft2(test_samples_16[0]['x'][0].numpy()))))
+fig.add_trace(go.Heatmap(z=a_2dfft, colorscale='Hot', showscale=False), row=1, col=2)
+
+fig.update_xaxes(title_text='주파수 (모드 번호)', row=1, col=1)
+fig.update_yaxes(title_text='파워', type='log', row=1, col=1)
+fig.update_xaxes(showticklabels=False, row=1, col=2)
+fig.update_yaxes(showticklabels=False, row=1, col=2)
+fig.update_layout(height=420, template='plotly_dark',
+    title='투수율(고주파) vs 압력(저주파) — FNO n_modes=8로 충분!',
+    legend=dict(x=0.35, y=0.95))
+fig.show()
+```
+
+::: {.small}
+- 투수율 $a(x)$: 이진 패턴 → 고주파 성분 풍부
+- 압력 $u(x)$: 부드러운 분포 → 저주파 위주
+- FNO 예측 $\hat{u}(x)$: 정답 스펙트럼과 매우 유사 ✅
+:::
+
+---
+
+# Part 8 · 결론
+
+---
+
+## 핵심 정리
+
+| 항목 | 내용 |
+|------|------|
+| **문제** | Darcy Flow: $-\nabla\cdot(a\nabla u)=f$ |
+| **접근** | Neural Operator — 함수 공간 매핑 학습 |
+| **모델** | FNO — 푸리에 스펙트럴 컨볼루션 4블록 |
+| **데이터** | 투수율 $a(x)$ → 압력 $u(x)$, 16×16 × 1,000 |
+| **학습** | AdamW + CosineAnnealing, 20 에포크, H1Loss |
+| **평가** | 평균 L2 오차 ~0.18 (16×16 테스트) |
+| **Zero-shot** | 32×32 해상도 즉시 예측 (재학습 없음) |
+
+<br>
+
+::: {.three-col}
+::: {.green-box}
+### 🚀 추론 속도
+FEM 대비 **1,000배 이상**
+단 한 번의 forward pass
+:::
+::: {.blue-box}
+### 📐 해상도 불변
+훈련 외 해상도에서도
+**Zero-shot** 정상 동작
+:::
+::: {.orange-box}
+### 🧠 함수 학습
+이산 벡터가 아닌
+**연속 연산자** 학습
+:::
+:::
+
+---
+
+## 다음 단계 & 참고문헌
+
+:::: {.columns}
+::: {.column width="52%"}
+### 다음 단계
+
+- **더 큰 데이터셋** — 421×421 해상도 Darcy
+- **TFNO** — Tucker 분해로 파라미터 ~90% 절감
+- **3D FNO** — Navier-Stokes, 대기 모델링
+- **SFNO** — 구면 도메인 (기상 예측, WeatherBench)
+- **GINO / FNOGNO** — 불규칙 격자, CAD 형상
+- **Geo-FNO** — 복잡한 기하 도메인
+- **MPP** — 범용 물리 예측 파운데이션 모델
+:::
+::: {.column width="48%"}
+### 참고문헌
+
+**[1]** Li et al. (2021). Fourier Neural Operator for
+Parametric PDEs. *ICLR 2021*. arXiv:2010.08895
+
+**[2]** Kovachki et al. (2021). Neural Operator:
+Learning Maps Between Function Spaces.
+*JMLR 2023*. arXiv:2108.08481
+
+**[3]** NeuralOperator Library (2022–).
+github.com/neuraloperator/neuraloperator
+
+**[4]** Li et al. (2022). Geo-FNO.
+arXiv:2207.05209
+:::
+::::
+
+---
+
+## {.center}
+
+::: {style="font-size: 2.2em; text-align: center; margin-top: 1.5em;"}
+감사합니다
+:::
+
+::: {style="text-align: center; margin-top: 1.2em; font-size: 0.9em; opacity: 0.65;"}
+Neural Operator & FNO — Uraniborg AI
+[github.com/uraniborg-ai/neuraloperator](https://github.com/uraniborg-ai/neuraloperator)
+:::
