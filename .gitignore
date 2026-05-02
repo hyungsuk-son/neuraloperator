@@ -1,3 +1,6 @@
+# Generated data files
+neuralop/data/datasets/data/
+
 # weights and biases
 .wandb/
 wandb_api_key.txt
